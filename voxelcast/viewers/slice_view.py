@@ -29,10 +29,10 @@ class SliceView(QtWidgets.QWidget):
         if ds.is_sinogram:
             # sinogram: show (angle, detector) per layer; scrub z if 3D
             disp = arr if arr.ndim == 2 else np.moveaxis(arr, 2, 0)
-            self.image_view.setImage(
-                np.ascontiguousarray(disp.astype(float)),
-                autoLevels=True,
-            )
+            disp = np.ascontiguousarray(disp.astype(float))
+            self.image_view.setImage(disp, autoLevels=True)
+            if disp.ndim == 3:
+                self._jump_to_busiest(disp)
             return
 
         squeezed = np.squeeze(arr)
@@ -40,5 +40,13 @@ class SliceView(QtWidgets.QWidget):
             self.image_view.setImage(squeezed.astype(float), autoLevels=True)
         else:
             # (nY, nX, nZ) -> (nZ, nY, nX) so the ImageView slider scrubs z.
-            zfirst = np.moveaxis(squeezed.astype(float), 2, 0)
-            self.image_view.setImage(np.ascontiguousarray(zfirst), autoLevels=True)
+            zfirst = np.ascontiguousarray(np.moveaxis(squeezed.astype(float), 2, 0))
+            self.image_view.setImage(zfirst, autoLevels=True)
+            self._jump_to_busiest(zfirst)
+
+    def _jump_to_busiest(self, stack: np.ndarray) -> None:
+        """Start on the slice with the most signal, not slice 0 (which is often
+        an empty edge of the object, e.g. a blade tip -> a black-looking view)."""
+        sums = stack.reshape(stack.shape[0], -1).sum(axis=1)
+        idx = int(np.argmax(sums)) if sums.size else 0
+        self.image_view.setCurrentIndex(idx)
