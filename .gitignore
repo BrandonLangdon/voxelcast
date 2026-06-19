@@ -25,3 +25,7 @@ env/
 *.target
 *.sino
 *.recon
+
+# Local test models (not ours to redistribute)
+TestModels/
+*.stl

@@ -36,11 +36,18 @@ class VolumeView(QtWidgets.QWidget):
         self.plotter.clear()
         arr = np.ascontiguousarray(np.squeeze(ds.array).astype(float))
         if arr.ndim != 3:
-            # Nothing to volume-render; leave the view empty.
+            # Nothing to volume-render; leave the view empty (but repaint so a
+            # previous volume is cleared from the screen).
+            self.plotter.render()
             return
         grid = pv.wrap(arr)  # numpy -> pyvista ImageData
         self.plotter.add_volume(grid, cmap="viridis", opacity="sigmoid")
         self.plotter.reset_camera()
+        # Explicitly repaint: an already-shown QtInteractor does NOT auto-render
+        # after the scene changes, so without this a dataset loaded *after* the
+        # first paint (e.g. a finished reconstruction) shows nothing until the
+        # user interacts with the view.
+        self.plotter.render()
 
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
         # QtInteractor must release its VTK render window explicitly.

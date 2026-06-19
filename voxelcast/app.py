@@ -136,11 +136,14 @@ class MainWindow(QtWidgets.QMainWindow):
         """Register a dataset in the selector; optionally show it."""
         ds.name = self._unique_name(ds.name)
         self._datasets[ds.name] = ds
+        # Block signals so adding/selecting doesn't fire _on_combo_changed; we
+        # call _display() once, explicitly, below (avoids a double render).
         self.dataset_combo.blockSignals(True)
         self.dataset_combo.addItem(ds.name)
-        self.dataset_combo.blockSignals(False)
         if select:
             self.dataset_combo.setCurrentText(ds.name)
+        self.dataset_combo.blockSignals(False)
+        if select:
             self._display(ds)
 
     # Backwards-compatible alias used by tests / file open.
