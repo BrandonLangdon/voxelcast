@@ -36,12 +36,15 @@ class VolumeView(QtWidgets.QWidget):
         self._grid: pv.ImageData | None = None
         self._vmax: float = 1.0
         self._name: str = "volume"
+        self._slice_index: int | None = None
+        self._slice_total: int = 1
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
 
         self.plotter = QtInteractor(self)
         self.plotter.set_background("white")
+        self.plotter.add_axes()  # orientation triad (X/Y/Z) for spatial context
         layout.addWidget(self.plotter.interactor)
 
         controls = QtWidgets.QHBoxLayout()
@@ -108,9 +111,38 @@ class VolumeView(QtWidgets.QWidget):
         self.thr.setEnabled(self.mode.currentText() == "Surface")
         self.plotter.clear()
         self._build_actor(self.plotter)
+        self._add_slice_plane_actor()  # clear() removed it; re-add
         if reset_camera:
             self.plotter.reset_camera()
         self._repaint()
+
+    def _add_slice_plane_actor(self) -> None:
+        """Draw a translucent plane at the current 2D-slice z position so the
+        user can see where the cross-section sits in the volume."""
+        if self._grid is None or self._slice_index is None:
+            return
+        b = self._grid.bounds
+        total = max(self._slice_total, 1)
+        frac = self._slice_index / (total - 1) if total > 1 else 0.0
+        z = b[4] + frac * (b[5] - b[4])
+        plane = pv.Plane(
+            center=((b[0] + b[1]) / 2, (b[2] + b[3]) / 2, z),
+            direction=(0, 0, 1),
+            i_size=(b[1] - b[0]) or 1.0,
+            j_size=(b[3] - b[2]) or 1.0,
+        )
+        # name= replaces any previous plane actor (cheap update, no full clear).
+        self.plotter.add_mesh(
+            plane, color="red", opacity=0.35, name="slice_plane", show_scalar_bar=False
+        )
+
+    def set_slice_marker(self, index: int, total: int) -> None:
+        """Update the slice-position plane (called when the 2D view scrubs)."""
+        self._slice_index = index
+        self._slice_total = total
+        if self._grid is not None:
+            self._add_slice_plane_actor()
+            self._repaint()
 
     def _reset_camera(self) -> None:
         self.plotter.reset_camera()
@@ -129,7 +161,19 @@ class VolumeView(QtWidgets.QWidget):
             return
         plotter = pv.Plotter(title=f"VoxelCast — {self._name}")
         plotter.set_background("white")
+        plotter.add_axes()
         self._build_actor(plotter)
+        if self._slice_index is not None and self._grid is not None:
+            b = self._grid.bounds
+            total = max(self._slice_total, 1)
+            frac = self._slice_index / (total - 1) if total > 1 else 0.0
+            z = b[4] + frac * (b[5] - b[4])
+            plane = pv.Plane(
+                center=((b[0] + b[1]) / 2, (b[2] + b[3]) / 2, z),
+                direction=(0, 0, 1),
+                i_size=(b[1] - b[0]) or 1.0, j_size=(b[3] - b[2]) or 1.0,
+            )
+            plotter.add_mesh(plane, color="red", opacity=0.35, show_scalar_bar=False)
         plotter.show()  # blocking native window; closes on user request
 
     # ----- Qt events: keep the embedded render alive on show/resize --------

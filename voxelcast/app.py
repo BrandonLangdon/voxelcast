@@ -111,6 +111,9 @@ class MainWindow(QtWidgets.QMainWindow):
             from voxelcast.viewers.slice_view import SliceView
             self._slice_view = SliceView()
             self.slice_dock.setWidget(self._slice_view)
+            # Sync the 2D scrub position to the 3D slice-plane indicator.
+            if self._volume_view is not None:
+                self._slice_view.slice_changed.connect(self._volume_view.set_slice_marker)
         except Exception as e:
             self.slice_dock.setWidget(
                 _placeholder(f"2D view unavailable:\n{e}\n\npip install pyqtgraph")
