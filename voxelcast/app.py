@@ -305,6 +305,11 @@ class MainWindow(QtWidgets.QMainWindow):
         if self._thread is not None and self._thread.isRunning():
             self._thread.quit()
             self._thread.wait()
+        # Child dock widgets don't get closeEvent when the main window closes, so
+        # clean up the 3D view's pop-outs and plotter here -- otherwise leftover
+        # VTK windows segfault at teardown on macOS.
+        if self._volume_view is not None:
+            self._volume_view.cleanup()
         super().closeEvent(event)
 
 

@@ -215,12 +215,22 @@ class VolumeView(QtWidgets.QWidget):
         # macOS embedded VTK can go black on resize unless re-rendered.
         self.plotter.render()
 
-    def closeEvent(self, event) -> None:  # noqa: N802
-        for p in self._popouts:
+    def cleanup(self) -> None:
+        """Close pop-out windows and the embedded plotter. Must be called before
+        the app tears down -- child dock widgets do NOT receive closeEvent when
+        the main window closes, and leaving VTK windows/plotters open at teardown
+        segfaults on macOS."""
+        for p in list(self._popouts):
             try:
                 p.close()
             except Exception:
                 pass
         self._popouts.clear()
-        self.plotter.close()
+        try:
+            self.plotter.close()
+        except Exception:
+            pass
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        self.cleanup()
         super().closeEvent(event)
