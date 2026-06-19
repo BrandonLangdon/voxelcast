@@ -43,6 +43,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._datasets: dict[str, Dataset] = {}
         self._volume_view = None
         self._slice_view = None
+        self._error_view = None
         self._thread: QtCore.QThread | None = None
         self._worker: OptimizeWorker | None = None
 
@@ -119,6 +120,18 @@ class MainWindow(QtWidgets.QMainWindow):
                 _placeholder(f"2D view unavailable:\n{e}\n\npip install pyqtgraph")
             )
         self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.slice_dock)
+
+        # Convergence / error plot (bottom, full width)
+        self.error_dock = QtWidgets.QDockWidget("Convergence", self)
+        try:
+            from voxelcast.viewers.error_view import ErrorView
+            self._error_view = ErrorView()
+            self.error_dock.setWidget(self._error_view)
+        except Exception as e:
+            self.error_dock.setWidget(
+                _placeholder(f"Convergence plot unavailable:\n{e}\n\npip install pyqtgraph")
+            )
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self.error_dock)
 
     def _build_statusbar(self) -> None:
         self.progress = QtWidgets.QProgressBar()
@@ -272,6 +285,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self.recon_act.setEnabled(False)
         self.progress.setVisible(True)
         self.progress.setRange(0, 0)  # indeterminate until first iteration
+        if self._error_view is not None:
+            self._error_view.reset()
         self.statusBar().showMessage(
             f"Optimizing ({params.method}, {params.n_iter} iters)…"
         )
@@ -281,12 +296,16 @@ class MainWindow(QtWidgets.QMainWindow):
     def _on_progress(self, i: int, n: int, loss: float) -> None:
         self.progress.setRange(0, n)
         self.progress.setValue(i)
+        if self._error_view is not None:
+            self._error_view.add_point(i, loss)
         self.statusBar().showMessage(f"Optimizing… iter {i}/{n}   loss={loss:.4g}")
 
     @QtCore.Slot(object, object)
     def _on_recon_done(self, recon_ds: Dataset, sino_ds: Dataset) -> None:
         self.add_dataset(sino_ds, select=False)
         self.add_dataset(recon_ds, select=True)
+        if self._error_view is not None:
+            self._error_view.set_complete()
         self.statusBar().showMessage("Reconstruction complete.")
 
     @QtCore.Slot(str)
