@@ -172,14 +172,22 @@ class VolumeView(QtWidgets.QWidget):
         QtCore.QTimer.singleShot(0, self.plotter.render)
 
     def pop_out(self) -> None:
-        """Open the current volume in a native VTK window (reliable rendering)."""
+        """Open the current volume in a separate window that renders reliably.
+
+        Uses pyvistaqt.BackgroundPlotter (a Qt window managed *within* this app)
+        rather than a native pv.Plotter: a native window shares VTK/Qt state with
+        the embedded interactor, so closing it crashes the whole app. The
+        BackgroundPlotter is independent and closes cleanly.
+        """
         if self._grid is None:
             return
-        plotter = pv.Plotter(title=f"VoxelCast — {self._name}")
-        plotter.set_background("white")
-        plotter.add_axes()
-        self._build_actor(plotter)
-        if self._slice_index is not None and self._grid is not None:
+        from pyvistaqt import BackgroundPlotter
+
+        bp = BackgroundPlotter(title=f"VoxelCast — {self._name}")
+        bp.set_background("white")
+        bp.add_axes()
+        self._build_actor(bp)
+        if self._slice_index is not None:
             b = self._grid.bounds
             total = max(self._slice_total, 1)
             frac = self._slice_index / (total - 1) if total > 1 else 0.0
@@ -189,10 +197,13 @@ class VolumeView(QtWidgets.QWidget):
                 direction=(0, 0, 1),
                 i_size=(b[1] - b[0]) or 1.0, j_size=(b[3] - b[2]) or 1.0,
             )
-            plotter.add_mesh(plane, color="red", opacity=0.45,
-                             show_scalar_bar=False, lighting=False)
-        self._popouts.append(plotter)  # keep a reference so VTK isn't GC'd mid-window
-        plotter.show()
+            bp.add_mesh(plane, color="red", opacity=0.45,
+                        show_scalar_bar=False, lighting=False)
+        bp.reset_camera()
+        # Keep a reference so it isn't GC'd while open; drop it when closed.
+        self._popouts.append(bp)
+        bp.app_window.signal_close.connect(lambda: self._popouts.remove(bp)
+                                           if bp in self._popouts else None)
 
     # ----- Qt events: keep the embedded render alive on show/resize --------
     def showEvent(self, event) -> None:  # noqa: N802
