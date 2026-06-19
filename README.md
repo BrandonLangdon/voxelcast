@@ -26,6 +26,19 @@ voxelcast --demo                # synthetic volume, no data files needed
 python -m voxelcast             # equivalent entry point
 ```
 
+## Reconstruct from an STL
+**Engine ▸ Reconstruct from STL…** (Ctrl+R) runs the full VAMToolbox pipeline
+and shows the result — no scripting required:
+
+1. **Voxelize** the STL into a target volume (VAMToolbox's OpenGL voxelizer,
+   on the main thread — fast).
+2. **Optimize** (OSMO/CAL/BCLP) on a background thread, with live iteration
+   progress in the status bar (the window stays responsive).
+3. The **target**, **sinogram**, and **recon** are added to the *Dataset*
+   selector in the toolbar — switch between them; volumes get the 3D view.
+
+Requires the `engine` extra (vamtoolbox). On macOS this runs entirely on CPU.
+
 ## Supported files
 | Type | Extensions | Needs vamtoolbox? |
 |------|------------|-------------------|
