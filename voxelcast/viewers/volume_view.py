@@ -38,6 +38,7 @@ class VolumeView(QtWidgets.QWidget):
         self._name: str = "volume"
         self._slice_index: int | None = None
         self._slice_total: int = 1
+        self._popouts: list = []  # keep native pop-out plotters alive (avoid GC crash)
 
         layout = QtWidgets.QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -153,12 +154,19 @@ class VolumeView(QtWidgets.QWidget):
     def _repaint(self) -> None:
         # An already-shown QtInteractor does not auto-render after the scene
         # changes. On macOS especially, a render() triggered from *another*
-        # widget's signal (e.g. the 2D slider) may not actually present until
-        # the user interacts with the 3D view. Force it: render(), schedule a
-        # Qt paintEvent on the VTK widget, and defer one more render.
+        # widget's signal (e.g. the 2D slider) renders to the back buffer but
+        # never presents until the user interacts with the 3D view directly.
+        # Force it: render, explicitly swap buffers (Frame), and do an
+        # *immediate* synchronous Qt repaint (repaint(), not update()).
         self.plotter.render()
+        rw = getattr(self.plotter, "render_window", None)
+        if rw is not None:
+            try:
+                rw.Frame()  # force the OpenGL buffer swap (present)
+            except Exception:
+                pass
         try:
-            self.plotter.interactor.update()  # QWidget repaint -> VTK present
+            self.plotter.repaint()  # immediate synchronous paintEvent
         except Exception:
             pass
         QtCore.QTimer.singleShot(0, self.plotter.render)
@@ -181,8 +189,10 @@ class VolumeView(QtWidgets.QWidget):
                 direction=(0, 0, 1),
                 i_size=(b[1] - b[0]) or 1.0, j_size=(b[3] - b[2]) or 1.0,
             )
-            plotter.add_mesh(plane, color="red", opacity=0.35, show_scalar_bar=False)
-        plotter.show()  # blocking native window; closes on user request
+            plotter.add_mesh(plane, color="red", opacity=0.45,
+                             show_scalar_bar=False, lighting=False)
+        self._popouts.append(plotter)  # keep a reference so VTK isn't GC'd mid-window
+        plotter.show()
 
     # ----- Qt events: keep the embedded render alive on show/resize --------
     def showEvent(self, event) -> None:  # noqa: N802
@@ -195,5 +205,11 @@ class VolumeView(QtWidgets.QWidget):
         self.plotter.render()
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        for p in self._popouts:
+            try:
+                p.close()
+            except Exception:
+                pass
+        self._popouts.clear()
         self.plotter.close()
         super().closeEvent(event)
