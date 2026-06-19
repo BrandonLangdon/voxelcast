@@ -132,8 +132,10 @@ class VolumeView(QtWidgets.QWidget):
             j_size=(b[3] - b[2]) or 1.0,
         )
         # name= replaces any previous plane actor (cheap update, no full clear).
+        # lighting=False -> flat bright red regardless of viewing angle.
         self.plotter.add_mesh(
-            plane, color="red", opacity=0.35, name="slice_plane", show_scalar_bar=False
+            plane, color="red", opacity=0.45, name="slice_plane",
+            show_scalar_bar=False, lighting=False,
         )
 
     def set_slice_marker(self, index: int, total: int) -> None:
@@ -150,9 +152,15 @@ class VolumeView(QtWidgets.QWidget):
 
     def _repaint(self) -> None:
         # An already-shown QtInteractor does not auto-render after the scene
-        # changes; render now AND defer one more render to the next event-loop
-        # tick to cover cases where the widget isn't laid out yet.
+        # changes. On macOS especially, a render() triggered from *another*
+        # widget's signal (e.g. the 2D slider) may not actually present until
+        # the user interacts with the 3D view. Force it: render(), schedule a
+        # Qt paintEvent on the VTK widget, and defer one more render.
         self.plotter.render()
+        try:
+            self.plotter.interactor.update()  # QWidget repaint -> VTK present
+        except Exception:
+            pass
         QtCore.QTimer.singleShot(0, self.plotter.render)
 
     def pop_out(self) -> None:
