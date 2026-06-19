@@ -1,0 +1,12 @@
+# Core GUI + visualization stack
+numpy>=1.24
+PySide6>=6.6
+pyqtgraph>=0.13
+pyvista>=0.43
+pyvistaqt>=0.11
+tifffile>=2023.7
+
+# Optional: install vamtoolbox to load native .target/.sino/.recon files and to
+# run optimizations in-process (the "engine" extra). Not required for viewing
+# neutral .npy/.tiff exports.
+# vamtoolbox
