@@ -39,6 +39,14 @@ and shows the result — no scripting required:
 
 Requires the `engine` extra (vamtoolbox). On macOS this runs entirely on CPU.
 
+### 3D view modes
+The 3D panel has two modes (top of the panel):
+- **Surface** (default) — a solid threshold surface colored by value, with a
+  threshold slider. Crisp and **resolution-independent**, so the shape stays
+  clearly visible at any grid size.
+- **Volume** — translucent volume rendering of the whole field; good for the
+  dose distribution, but gets fainter as resolution rises.
+
 ## Supported files
 | Type | Extensions | Needs vamtoolbox? |
 |------|------------|-------------------|
