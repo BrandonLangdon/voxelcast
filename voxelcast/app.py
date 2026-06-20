@@ -45,12 +45,14 @@ class MainWindow(QtWidgets.QMainWindow):
         self._slice_view = None
         self._sinogram_view = None
         self._error_view = None
+        self._compare_view = None
         self._thread: QtCore.QThread | None = None
         self._worker: OptimizeWorker | None = None
 
         self._build_menu()
         self._build_toolbar()
         self._build_docks()
+        self._build_view_menu()  # after docks exist (uses their toggle actions)
         self._build_statusbar()
         self.statusBar().showMessage("Open a file or reconstruct from an STL to begin")
 
@@ -137,7 +139,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self.tabifyDockWidget(self.slice_dock, self.sinogram_dock)
         self.sinogram_dock.hide()
 
-        # Convergence / error plot (bottom, full width)
+        # Side-by-side comparison (e.g. target vs recon). Hidden by default;
+        # toggle from the View menu. Shares the left area, tabbed.
+        self.compare_dock = QtWidgets.QDockWidget("Compare", self)
+        try:
+            from voxelcast.viewers.compare_view import CompareView
+            self._compare_view = CompareView()
+            self.compare_dock.setWidget(self._compare_view)
+        except Exception as e:
+            self.compare_dock.setWidget(
+                _placeholder(f"Compare view unavailable:\n{e}\n\npip install pyqtgraph")
+            )
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.compare_dock)
+        self.tabifyDockWidget(self.slice_dock, self.compare_dock)
+        self.compare_dock.hide()
+
+        # Convergence / error plot (bottom, full width). Hidden by default --
+        # it's mainly a debugging/reference tool; enable it from the View menu.
         self.error_dock = QtWidgets.QDockWidget("Convergence", self)
         try:
             from voxelcast.viewers.error_view import ErrorView
@@ -148,6 +166,14 @@ class MainWindow(QtWidgets.QMainWindow):
                 _placeholder(f"Convergence plot unavailable:\n{e}\n\npip install pyqtgraph")
             )
         self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self.error_dock)
+        self.error_dock.hide()
+
+    def _build_view_menu(self) -> None:
+        """A View menu with a show/hide toggle for every panel."""
+        view_menu = self.menuBar().addMenu("&View")
+        for dock in (self.slice_dock, self.sinogram_dock, self.volume_dock,
+                     self.compare_dock, self.error_dock):
+            view_menu.addAction(dock.toggleViewAction())
 
     def _build_statusbar(self) -> None:
         self.progress = QtWidgets.QProgressBar()
@@ -175,6 +201,8 @@ class MainWindow(QtWidgets.QMainWindow):
         if select:
             self.dataset_combo.setCurrentText(ds.name)
         self.dataset_combo.blockSignals(False)
+        if self._compare_view is not None:
+            self._compare_view.set_datasets(self._datasets)
         if select:
             self._display(ds)
 
