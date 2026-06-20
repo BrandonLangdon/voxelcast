@@ -77,7 +77,7 @@ class MainWindow(QtWidgets.QMainWindow):
         quit_act.triggered.connect(self.close)
 
         engine_menu = self.menuBar().addMenu("&Engine")
-        self.recon_act = engine_menu.addAction("&Reconstruct from STL…")
+        self.recon_act = engine_menu.addAction("&Reconstruct from STL / 3MF…")
         self.recon_act.setShortcut("Ctrl+R")
         self.recon_act.triggered.connect(self.reconstruct_from_stl)
 
@@ -287,7 +287,7 @@ class MainWindow(QtWidgets.QMainWindow):
             QtWidgets.QMessageBox.critical(
                 self, "Engine unavailable",
                 "vamtoolbox is not installed in this environment.\n"
-                "Install it (pip install -e '.[engine]') to reconstruct from STL.",
+                "Install it (pip install -e '.[engine]') to reconstruct from STL/3MF.",
             )
             return
 
@@ -297,17 +297,22 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         params = dlg.params()
 
-        # Stage 1: voxelize on the MAIN thread (OpenGL). Fast; show target ASAP.
-        self.statusBar().showMessage(f"Voxelizing {os.path.basename(params.stl_path)}…")
+        # Stage 1: voxelize on the MAIN thread (STL uses OpenGL). Show target ASAP.
+        self.statusBar().showMessage(f"Voxelizing {os.path.basename(params.mesh_path)}…")
         QtWidgets.QApplication.processEvents()
         try:
-            from voxelcast.engine.reconstruct import voxelize_stl, build_proj_and_options
-            target_geo, target_ds = voxelize_stl(params)
+            from voxelcast.engine.reconstruct import voxelize_mesh, build_proj_and_options
+            target_geo, datasets = voxelize_mesh(params)
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Voxelization failed", f"{e}")
             self.statusBar().showMessage("Voxelization failed.")
             return
-        self.add_dataset(target_ds, select=True)
+        # Show the target plus any 3MF role volumes (insert / zero_dose).
+        for i, ds in enumerate(datasets):
+            self.add_dataset(ds, select=(i == 0))
+        if len(datasets) > 1:
+            roles = ", ".join(d.name for d in datasets[1:])
+            self.statusBar().showMessage(f"3MF roles imported: target + {roles}")
 
         # Stage 2: optimize on a WORKER thread.
         proj_geo, options = build_proj_and_options(params)

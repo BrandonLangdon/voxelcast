@@ -8,7 +8,7 @@ from voxelcast.engine.reconstruct import ReconParams, OPTIMIZERS
 
 
 def test_recon_params_defaults():
-    p = ReconParams(stl_path="/tmp/x.stl")
+    p = ReconParams(mesh_path="/tmp/x.stl")
     assert p.method in OPTIMIZERS
     assert 0 <= p.d_l <= p.d_h <= 1
     assert p.resolution > 0 and p.n_iter > 0 and p.num_angles >= 2
@@ -18,7 +18,7 @@ def test_build_proj_and_options():
     pytest.importorskip("vamtoolbox")
     from voxelcast.engine.reconstruct import build_proj_and_options
 
-    p = ReconParams(stl_path="/tmp/x.stl", method="OSMO", n_iter=7, num_angles=120)
+    p = ReconParams(mesh_path="/tmp/x.stl", method="OSMO", n_iter=7, num_angles=120)
     proj_geo, options = build_proj_and_options(p)
     assert options.method == "OSMO"
     assert options.n_iter == 7

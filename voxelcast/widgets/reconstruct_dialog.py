@@ -1,4 +1,4 @@
-"""Dialog to choose an STL and reconstruction parameters."""
+"""Dialog to choose an STL/3MF and reconstruction parameters."""
 from __future__ import annotations
 
 import os
@@ -11,15 +11,15 @@ FILTERS = ("hamming", "ram-lak", "shepp-logan", "cosine", "hanning")
 
 
 class ReconstructDialog(QtWidgets.QDialog):
-    def __init__(self, parent=None, stl_path: str = "") -> None:
+    def __init__(self, parent=None, mesh_path: str = "") -> None:
         super().__init__(parent)
-        self.setWindowTitle("Reconstruct from STL")
+        self.setWindowTitle("Reconstruct from STL / 3MF")
         self.setMinimumWidth(440)
 
         form = QtWidgets.QFormLayout()
 
-        # STL file picker
-        self._path = QtWidgets.QLineEdit(stl_path)
+        # Mesh file picker (STL or 3MF; 3MF may carry beam lattices + roles)
+        self._path = QtWidgets.QLineEdit(mesh_path)
         browse = QtWidgets.QPushButton("Browse…")
         browse.clicked.connect(self._browse)
         row = QtWidgets.QHBoxLayout()
@@ -27,7 +27,7 @@ class ReconstructDialog(QtWidgets.QDialog):
         row.addWidget(browse)
         path_w = QtWidgets.QWidget()
         path_w.setLayout(row)
-        form.addRow("STL file:", path_w)
+        form.addRow("Mesh file:", path_w)
 
         self._resolution = QtWidgets.QSpinBox()
         self._resolution.setRange(8, 1000)
@@ -79,20 +79,21 @@ class ReconstructDialog(QtWidgets.QDialog):
 
     def _browse(self) -> None:
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Choose STL", os.path.dirname(self._path.text()), "STL meshes (*.stl)"
+            self, "Choose mesh", os.path.dirname(self._path.text()),
+            "Meshes (*.stl *.3mf);;STL (*.stl);;3MF (*.3mf)"
         )
         if path:
             self._path.setText(path)
 
     def accept(self) -> None:  # noqa: D102
         if not self._path.text().strip():
-            QtWidgets.QMessageBox.warning(self, "No STL", "Please choose an STL file.")
+            QtWidgets.QMessageBox.warning(self, "No mesh", "Please choose an STL or 3MF file.")
             return
         super().accept()
 
     def params(self) -> ReconParams:
         return ReconParams(
-            stl_path=self._path.text().strip(),
+            mesh_path=self._path.text().strip(),
             resolution=self._resolution.value(),
             method=self._method.currentText(),
             n_iter=self._n_iter.value(),
