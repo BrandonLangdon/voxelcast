@@ -43,6 +43,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._datasets: dict[str, Dataset] = {}
         self._volume_view = None
         self._slice_view = None
+        self._sinogram_view = None
         self._error_view = None
         self._thread: QtCore.QThread | None = None
         self._worker: OptimizeWorker | None = None
@@ -121,6 +122,21 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.slice_dock)
 
+        # Dedicated sinogram / projection view (angle scrubber). Shares the left
+        # area with the 2D slices dock; only one is shown at a time per dataset.
+        self.sinogram_dock = QtWidgets.QDockWidget("Sinogram / Projections", self)
+        try:
+            from voxelcast.viewers.sinogram_view import SinogramView
+            self._sinogram_view = SinogramView()
+            self.sinogram_dock.setWidget(self._sinogram_view)
+        except Exception as e:
+            self.sinogram_dock.setWidget(
+                _placeholder(f"Sinogram view unavailable:\n{e}\n\npip install pyqtgraph")
+            )
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.sinogram_dock)
+        self.tabifyDockWidget(self.slice_dock, self.sinogram_dock)
+        self.sinogram_dock.hide()
+
         # Convergence / error plot (bottom, full width)
         self.error_dock = QtWidgets.QDockWidget("Convergence", self)
         try:
@@ -176,11 +192,21 @@ class MainWindow(QtWidgets.QMainWindow):
         self.export_act.setEnabled(True)
         self.setWindowTitle(f"VoxelCast {__version__} — {ds.name}")
         self.statusBar().showMessage(ds.summary())
-        if self._slice_view is not None:
+
+        is_sino = ds.is_sinogram
+        # Sinograms -> dedicated angle-scrubber view; everything else -> slices.
+        if is_sino and self._sinogram_view is not None:
+            self._sinogram_view.set_dataset(ds)
+        elif self._slice_view is not None:
             self._slice_view.set_dataset(ds)
-        if self._volume_view is not None:
+        if self._volume_view is not None and not is_sino:
             self._volume_view.set_dataset(ds)
+
         self.volume_dock.setVisible(ds.is_volume)
+        self.slice_dock.setVisible(not is_sino)
+        self.sinogram_dock.setVisible(is_sino)
+        if is_sino:
+            self.sinogram_dock.raise_()
 
     # ----- file actions ----------------------------------------------------
     def open_file_dialog(self) -> None:
