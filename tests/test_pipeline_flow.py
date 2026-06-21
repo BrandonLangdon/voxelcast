@@ -77,18 +77,37 @@ def test_stage_flow_config_assembles(qapp):
     assert len(STAGES) == 4
 
 
-def test_stage_rail_unlocks_progressively(qapp):
+def test_stage_bar_unlocks_progressively(qapp):
     from voxelcast.widgets.stage_flow import StageFlow
-    from PySide6 import QtCore
     sf = StageFlow()
     # only Prep enabled initially
-    assert sf.rail.item(0).flags() & QtCore.Qt.ItemFlag.ItemIsEnabled
-    assert not (sf.rail.item(2).flags() & QtCore.Qt.ItemFlag.ItemIsEnabled)
+    assert sf.bar.isTabEnabled(0)
+    assert not sf.bar.isTabEnabled(2)
     # voxelizing unlocks Optimize; optimizing unlocks Preview
     sf.on_voxelized((10, 10, 8), 100)
-    assert sf.rail.item(2).flags() & QtCore.Qt.ItemFlag.ItemIsEnabled
+    assert sf.bar.isTabEnabled(2)
     sf.on_optimized({"gel_mean": 0.8, "void_mean": 0.2, "contrast": 0.6}, 1.2)
-    assert sf.rail.item(3).flags() & QtCore.Qt.ItemFlag.ItemIsEnabled
+    assert sf.bar.isTabEnabled(3)
+
+
+def test_prep_per_model_transform(qapp, tmp_path):
+    trimesh = pytest.importorskip("trimesh")
+    from PySide6 import QtCore, QtWidgets
+    from voxelcast.widgets.stage_flow import StageFlow, _PATH_ROLE, _XFORM_ROLE
+    p = tmp_path / "m.stl"
+    trimesh.creation.box(extents=(4, 4, 4)).export(str(p))
+    sf = StageFlow()
+    it = QtWidgets.QListWidgetItem("m.stl")
+    it.setData(_PATH_ROLE, str(p))
+    it.setData(_XFORM_ROLE, dict(tx=0.0, ty=0.0, tz=0.0, rx=0.0, ry=0.0, rz=0.0))
+    sf.prep.list.addItem(it)
+    sf.prep.list.setCurrentItem(it)
+    sf.prep.tx.setValue(12.0)
+    sf.prep.rz.setValue(90.0)
+    models = sf.prep.models()
+    assert len(models) == 1
+    assert models[0]["tx"] == 12.0 and models[0]["rz"] == 90.0
+    assert models[0]["path"] == str(p)
 
 
 def test_diffusion_disabled_for_osmo(qapp):

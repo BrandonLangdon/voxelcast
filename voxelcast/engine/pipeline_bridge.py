@@ -35,18 +35,44 @@ def engine_available() -> bool:
 # Multi-STL handling
 # --------------------------------------------------------------------------- #
 def merge_stls(paths: list[str]) -> tuple[str, bool]:
-    """Merge one or more STLs into a single mesh sharing one bounding box.
+    """Merge one or more STLs (no per-model transform) into one aligned mesh.
 
-    Returns (path, is_temp). For a single STL the original path is returned
-    unchanged. For multiple, the meshes are concatenated (so they voxelize into
-    one aligned grid) and written to a temp .stl the caller should clean up.
+    Returns (path, is_temp); a single STL is returned unchanged. Thin wrapper
+    over merge_meshes for callers that only have paths.
     """
-    if not paths:
-        raise ValueError("no STL files given")
-    if len(paths) == 1:
-        return paths[0], False
+    return merge_meshes([{"path": p} for p in paths])
+
+
+def _is_identity_xform(m: dict) -> bool:
+    return all(abs(float(m.get(k, 0.0))) < 1e-9
+               for k in ("tx", "ty", "tz", "rx", "ry", "rz"))
+
+
+def merge_meshes(models: list[dict]) -> tuple[str, bool]:
+    """Merge STL models, applying each model's translate+rotate, into one mesh.
+
+    `models` is a list of {path, tx, ty, tz (mm), rx, ry, rz (deg)}. The meshes
+    are transformed then concatenated so they voxelize into one aligned grid.
+    Returns (path, is_temp); a single untransformed model is passed through.
+    """
+    if not models:
+        raise ValueError("no models given")
+    if len(models) == 1 and _is_identity_xform(models[0]):
+        return models[0]["path"], False
+    import math
     import trimesh
-    meshes = [trimesh.load(p, force="mesh") for p in paths]
+    meshes = []
+    for m in models:
+        mesh = trimesh.load(m["path"], force="mesh")
+        R = trimesh.transformations.euler_matrix(
+            math.radians(float(m.get("rx", 0.0))),
+            math.radians(float(m.get("ry", 0.0))),
+            math.radians(float(m.get("rz", 0.0))), "rxyz")
+        mesh.apply_transform(R)
+        mesh.apply_translation([float(m.get("tx", 0.0)),
+                                float(m.get("ty", 0.0)),
+                                float(m.get("tz", 0.0))])
+        meshes.append(mesh)
     combined = trimesh.util.concatenate(meshes)
     fd, tmp = tempfile.mkstemp(suffix=".stl", prefix="voxelcast_merged_")
     os.close(fd)

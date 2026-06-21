@@ -432,47 +432,79 @@ class MainWindow(QtWidgets.QMainWindow):
         return False
 
     def _flow_voxelize(self) -> None:
-        """Stage 2: merge STL(s) + voxelize on the MAIN thread (OpenGL)."""
+        """Stage 2: build the target on the MAIN thread (OpenGL voxelizer).
+
+        STL models are merged (each with its translate+rotate) into one aligned
+        grid; a single 3MF is voxelized with its roles (insert / zero-dose).
+        """
         if self._flow_busy():
             return
-        paths = self.stage.prep.stl_paths()
-        if not paths:
-            QtWidgets.QMessageBox.warning(self, "No STL", "Add at least one STL file.")
+        models = self.stage.prep.models()
+        if not models:
+            QtWidgets.QMessageBox.warning(self, "No models", "Add at least one STL or 3MF model.")
             return
         import vamtoolbox as vam
-        self._cleanup_tmp()
-        try:
-            merged, is_temp = pb.merge_stls(paths)
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Merge failed", f"{e}")
+        stl = [m for m in models if m["path"].lower().endswith(".stl")]
+        tmf = [m for m in models if m["path"].lower().endswith(".3mf")]
+        if tmf and (stl or len(tmf) > 1):
+            QtWidgets.QMessageBox.warning(
+                self, "Unsupported combination",
+                "3MF carries its own bodies/roles, so it can't yet be merged with "
+                "other models. Import a single 3MF on its own, or use STL parts.")
             return
-        self._merged_tmp = merged if is_temp else None
 
+        self._cleanup_tmp()
         fields = self.stage.config_dict()
-        fields["stl_path"] = merged
-        self._config, self._pipe = pb.make_pipeline(fields)
-        try:
-            self._pipe.apply_hardware()      # fills use_cuda / rebin_jobs
-        except Exception:
-            pass
 
-        self.stage.voxelize.set_status(
-            f"Voxelizing {len(paths)} part(s) at resolution {self._config.res_opt}…")
-        QtWidgets.QApplication.processEvents()
         try:
-            rot = self.stage.prep.rot_angles()
-            tg = vam.geometry.TargetGeometry(
-                stlfilename=merged, resolution=self._config.res_opt, rot_angles=rot)
-            tg.insert = None
-            self._pipe.target = tg
+            if tmf:
+                # Single 3MF: voxelize with roles; rotation from its transform.
+                m = tmf[0]
+                fields["stl_path"] = m["path"]
+                self._config, self._pipe = pb.make_pipeline(fields)
+                self._apply_hardware_quiet()
+                self.stage.voxelize.set_status(
+                    f"Voxelizing 3MF at resolution {self._config.res_opt}…")
+                QtWidgets.QApplication.processEvents()
+                tg = vam.geometry.TargetGeometry(
+                    threemffilename=m["path"], resolution=self._config.res_opt,
+                    rot_angles=[m["rx"], m["ry"], m["rz"]], bodies="auto")
+                self._pipe.target = tg
+            else:
+                # STL(s): merge with per-model transforms, then voxelize.
+                merged, is_temp = pb.merge_meshes(stl)
+                self._merged_tmp = merged if is_temp else None
+                fields["stl_path"] = merged
+                self._config, self._pipe = pb.make_pipeline(fields)
+                self._apply_hardware_quiet()
+                self.stage.voxelize.set_status(
+                    f"Voxelizing {len(stl)} part(s) at resolution {self._config.res_opt}…")
+                QtWidgets.QApplication.processEvents()
+                tg = vam.geometry.TargetGeometry(
+                    stlfilename=merged, resolution=self._config.res_opt)
+                tg.insert = None
+                self._pipe.target = tg
         except Exception as e:
             QtWidgets.QMessageBox.critical(self, "Voxelization failed", f"{e}")
             self.stage.voxelize.set_status("Voxelization failed.")
             return
+
         arr = np.asarray(tg.array)
         self.add_dataset(Dataset(array=arr, vol_type="target", name="target"))
+        # Surface any 3MF role volumes (insert / zero-dose) as datasets too.
+        for role in ("insert", "zero_dose"):
+            ra = getattr(tg, role, None)
+            if ra is not None and np.asarray(ra).any():
+                self.add_dataset(Dataset(array=np.asarray(ra), vol_type="target",
+                                         name=role), select=False)
         self.stage.on_voxelized(arr.shape, int((arr > 0).sum()))
         self.statusBar().showMessage(f"Voxelized: {arr.shape}")
+
+    def _apply_hardware_quiet(self) -> None:
+        try:
+            self._pipe.apply_hardware()      # fills use_cuda / rebin_jobs
+        except Exception:
+            pass
 
     def _flow_optimize(self) -> None:
         if self._pipe is None or self._pipe.target is None:

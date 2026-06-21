@@ -1,16 +1,16 @@
 """Guided four-stage workflow: Prep -> Voxelize -> Optimize -> Preview.
 
-A vertical *stage rail* on the left drives a stacked set of control panels in the
-center; the surrounding viewer docks show live previews. The panels only collect
+A horizontal *step bar* across the top drives a stacked set of control panels;
+the surrounding viewer docks show live previews. The panels only collect
 parameters and emit high-level requests -- MainWindow owns the VAMPipeline, the
 worker thread, and the dataset/viewer plumbing, and calls back here to unlock the
 next stage and stream progress.
 
 Stages map onto VAMToolbox's VAMPipeline:
-  Prep      -> choose STL(s) + part/vial geometry  (builds PrintConfig)
+  Prep      -> choose STL/3MF model(s) + per-model transform + part/vial geometry
   Voxelize  -> pipeline.voxelize()  (GPU OpenGL, main thread)
-  Optimize  -> pipeline.optimize()  (OSMO/BCLP, worker; absorption/diffusion,
-               z-slab, low-memory, hardware auto-tune)
+  Optimize  -> pipeline.optimize()  (OSMO/BCLP; absorption/diffusion, z-slab,
+               low-memory, hardware auto-tune)
   Preview   -> pipeline.rebin() + save_video()  (printer-ready MP4)
 """
 from __future__ import annotations
@@ -21,9 +21,13 @@ from PySide6 import QtCore, QtWidgets
 
 STAGES = ("Prep", "Voxelize", "Optimize", "Preview")
 
+MODEL_EXTS = (".stl", ".3mf")
+_PATH_ROLE = QtCore.Qt.ItemDataRole.UserRole
+_XFORM_ROLE = QtCore.Qt.ItemDataRole.UserRole + 1
+
 
 class StageFlow(QtWidgets.QWidget):
-    """Container widget: [stage rail | stacked panels]."""
+    """Container widget: [top step bar] over [stacked panels]."""
 
     voxelizeRequested = QtCore.Signal()
     optimizeRequested = QtCore.Signal()
@@ -39,28 +43,34 @@ class StageFlow(QtWidgets.QWidget):
         self.preview = PreviewPanel()
         self._panels = [self.prep, self.voxelize, self.optimize, self.preview]
 
+        # Each panel scrolls, so a small window never clips its controls.
         self.stack = QtWidgets.QStackedWidget()
         for p in self._panels:
-            self.stack.addWidget(p)
+            scroll = QtWidgets.QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+            scroll.setWidget(p)
+            self.stack.addWidget(scroll)
 
-        self.rail = QtWidgets.QListWidget()
-        self.rail.setFixedWidth(132)
-        self.rail.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        # Top horizontal step bar.
+        self.bar = QtWidgets.QTabBar()
+        self.bar.setDrawBase(True)
+        self.bar.setExpanding(True)
+        self.bar.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
         for i, name in enumerate(STAGES):
-            item = QtWidgets.QListWidgetItem(f"{i + 1}.  {name}")
-            item.setSizeHint(QtCore.QSize(0, 44))
-            self.rail.addItem(item)
-        self.rail.currentRowChanged.connect(self.stack.setCurrentIndex)
+            self.bar.addTab(f"{i + 1}.  {name}")
+        self.bar.currentChanged.connect(self.stack.setCurrentIndex)
 
-        lay = QtWidgets.QHBoxLayout(self)
+        lay = QtWidgets.QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.addWidget(self.rail)
+        lay.setSpacing(0)
+        lay.addWidget(self.bar)
         lay.addWidget(self.stack, 1)
 
         # Stages unlock as prerequisites are met.
         self._max_enabled = 0
         self._set_enabled_through(0)
-        self.rail.setCurrentRow(0)
+        self.bar.setCurrentIndex(0)
 
         # Panel buttons -> flow requests / navigation
         self.prep.next_btn.clicked.connect(lambda: self.go_to(1))
@@ -71,20 +81,15 @@ class StageFlow(QtWidgets.QWidget):
         self.optimize.next_btn.clicked.connect(self._enter_preview)
         self.preview.export_btn.clicked.connect(self._emit_export)
 
-    # -- rail enabling --------------------------------------------------------
+    # -- step bar enabling ----------------------------------------------------
     def _set_enabled_through(self, idx: int) -> None:
         self._max_enabled = max(self._max_enabled, idx)
-        for i in range(self.rail.count()):
-            it = self.rail.item(i)
-            flags = it.flags()
-            if i <= self._max_enabled:
-                it.setFlags(flags | QtCore.Qt.ItemFlag.ItemIsEnabled)
-            else:
-                it.setFlags(flags & ~QtCore.Qt.ItemFlag.ItemIsEnabled)
+        for i in range(self.bar.count()):
+            self.bar.setTabEnabled(i, i <= self._max_enabled)
 
     def go_to(self, idx: int) -> None:
         self._set_enabled_through(idx)
-        self.rail.setCurrentRow(idx)
+        self.bar.setCurrentIndex(idx)
 
     def _enter_preview(self) -> None:
         self.go_to(3)
@@ -149,24 +154,38 @@ def _section(title: str) -> QtWidgets.QLabel:
     return lbl
 
 
+def _spin(lo, hi, val, step=1.0, suffix="", decimals=None) -> QtWidgets.QDoubleSpinBox:
+    s = QtWidgets.QDoubleSpinBox()
+    s.setRange(lo, hi)
+    s.setSingleStep(step)
+    if decimals is not None:
+        s.setDecimals(decimals)
+    s.setValue(val)
+    if suffix:
+        s.setSuffix(suffix)
+    return s
+
+
 class PrepPanel(QtWidgets.QWidget):
-    """Choose one or more STLs and set part/vial geometry."""
+    """Choose STL/3MF model(s), set a per-model transform, and part/vial geometry."""
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         lay = QtWidgets.QVBoxLayout(self)
-        lay.addWidget(_section("1. Prep — model & geometry"))
+        lay.addWidget(_section("1. Prep — models & geometry"))
         lay.addWidget(QtWidgets.QLabel(
-            "Load one or more STL files. Multiple parts are merged into one "
-            "aligned voxel grid."))
+            "Load one or more STL or 3MF models. STL parts are merged into one "
+            "aligned voxel grid; a single 3MF can carry lattices + roles "
+            "(insert / zero-dose)."))
 
         self.list = QtWidgets.QListWidget()
         self.list.setSelectionMode(
             QtWidgets.QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.list.currentItemChanged.connect(self._load_xform)
         lay.addWidget(self.list, 1)
 
         row = QtWidgets.QHBoxLayout()
-        add = QtWidgets.QPushButton("Add STL(s)…")
+        add = QtWidgets.QPushButton("Add model(s)…")
         add.clicked.connect(self._add)
         rm = QtWidgets.QPushButton("Remove")
         rm.clicked.connect(self._remove)
@@ -175,49 +194,50 @@ class PrepPanel(QtWidgets.QWidget):
         row.addStretch(1)
         lay.addLayout(row)
 
-        form = QtWidgets.QFormLayout()
-        self.part_height = QtWidgets.QDoubleSpinBox()
-        self.part_height.setRange(0.1, 1000.0)
-        self.part_height.setValue(25.4)
-        self.part_height.setSuffix(" mm")
-        form.addRow("Part height:", self.part_height)
+        # Per-model transform editor (applies to the currently selected model).
+        self.xform_box = QtWidgets.QGroupBox("Selected model — transform")
+        xf = QtWidgets.QFormLayout(self.xform_box)
+        self._loading = False
+        self.tx = _spin(-1000, 1000, 0.0, 1.0, " mm")
+        self.ty = _spin(-1000, 1000, 0.0, 1.0, " mm")
+        self.tz = _spin(-1000, 1000, 0.0, 1.0, " mm")
+        self.rx = _spin(-180, 180, 0.0, 5.0, "°")
+        self.ry = _spin(-180, 180, 0.0, 5.0, "°")
+        self.rz = _spin(-180, 180, 0.0, 5.0, "°")
+        trow = QtWidgets.QHBoxLayout()
+        for s in (self.tx, self.ty, self.tz):
+            trow.addWidget(s)
+        tw = QtWidgets.QWidget(); tw.setLayout(trow)
+        xf.addRow("Translate X/Y/Z:", tw)
+        rrow = QtWidgets.QHBoxLayout()
+        for s in (self.rx, self.ry, self.rz):
+            rrow.addWidget(s)
+        rw = QtWidgets.QWidget(); rw.setLayout(rrow)
+        xf.addRow("Rotate X/Y/Z:", rw)
+        for s in (self.tx, self.ty, self.tz, self.rx, self.ry, self.rz):
+            s.valueChanged.connect(self._save_xform)
+        self.xform_box.setEnabled(False)
+        lay.addWidget(self.xform_box)
 
-        self.voxel_pitch = QtWidgets.QDoubleSpinBox()
-        self.voxel_pitch.setRange(1.0, 2000.0)
-        self.voxel_pitch.setValue(80.0)
-        self.voxel_pitch.setSuffix(" µm")
+        # Scene / print geometry (global).
+        gbox = QtWidgets.QGroupBox("Part & vial")
+        form = QtWidgets.QFormLayout(gbox)
+        self.part_height = _spin(0.1, 1000.0, 25.4, 1.0, " mm")
+        form.addRow("Part height:", self.part_height)
+        self.voxel_pitch = _spin(1.0, 2000.0, 80.0, 1.0, " µm")
         self.voxel_pitch.setToolTip("Print voxel pitch (full resolution)")
         form.addRow("Voxel pitch:", self.voxel_pitch)
-
-        self.res_scale = QtWidgets.QDoubleSpinBox()
-        self.res_scale.setRange(0.05, 1.0)
-        self.res_scale.setSingleStep(0.05)
-        self.res_scale.setValue(1.0)
+        self.res_scale = _spin(0.05, 1.0, 1.0, 0.05)
         self.res_scale.setToolTip("Optimize at this fraction of full resolution "
                                   "(< 1 is faster; upsampled before rebin)")
         form.addRow("Resolution scale:", self.res_scale)
-
-        self.vial_radius = QtWidgets.QDoubleSpinBox()
-        self.vial_radius.setRange(1.0, 500.0)
-        self.vial_radius.setValue(48.8)
-        self.vial_radius.setSuffix(" mm")
+        self.vial_radius = _spin(1.0, 500.0, 48.8, 1.0, " mm")
         form.addRow("Vial radius:", self.vial_radius)
-
         self.n_angles = QtWidgets.QSpinBox()
         self.n_angles.setRange(2, 3600)
         self.n_angles.setValue(360)
         form.addRow("Projection angles:", self.n_angles)
-
-        self.rot_x = self._angle_spin()
-        self.rot_y = self._angle_spin()
-        self.rot_z = self._angle_spin()
-        rrow = QtWidgets.QHBoxLayout()
-        for s in (self.rot_x, self.rot_y, self.rot_z):
-            rrow.addWidget(s)
-        rotw = QtWidgets.QWidget()
-        rotw.setLayout(rrow)
-        form.addRow("Rotate X/Y/Z:", rotw)
-        lay.addLayout(form)
+        lay.addWidget(gbox)
 
         nav = QtWidgets.QHBoxLayout()
         nav.addStretch(1)
@@ -226,26 +246,25 @@ class PrepPanel(QtWidgets.QWidget):
         nav.addWidget(self.next_btn)
         lay.addLayout(nav)
 
-    @staticmethod
-    def _angle_spin() -> QtWidgets.QDoubleSpinBox:
-        s = QtWidgets.QDoubleSpinBox()
-        s.setRange(-180.0, 180.0)
-        s.setSuffix("°")
-        return s
-
+    # -- model list -----------------------------------------------------------
     def _add(self) -> None:
         paths, _ = QtWidgets.QFileDialog.getOpenFileNames(
-            self, "Add STL files", "", "STL (*.stl);;All files (*)")
+            self, "Add models", "",
+            "Models (*.stl *.3mf);;STL (*.stl);;3MF (*.3mf);;All files (*)")
         for p in paths:
+            if os.path.splitext(p)[1].lower() not in MODEL_EXTS:
+                continue
             if not self._has(p):
                 it = QtWidgets.QListWidgetItem(os.path.basename(p))
-                it.setData(QtCore.Qt.ItemDataRole.UserRole, p)
+                it.setData(_PATH_ROLE, p)
+                it.setData(_XFORM_ROLE, dict(tx=0.0, ty=0.0, tz=0.0,
+                                             rx=0.0, ry=0.0, rz=0.0))
                 it.setToolTip(p)
                 self.list.addItem(it)
         self.next_btn.setEnabled(self.list.count() > 0)
 
     def _has(self, path: str) -> bool:
-        return any(self.list.item(i).data(QtCore.Qt.ItemDataRole.UserRole) == path
+        return any(self.list.item(i).data(_PATH_ROLE) == path
                    for i in range(self.list.count()))
 
     def _remove(self) -> None:
@@ -253,9 +272,40 @@ class PrepPanel(QtWidgets.QWidget):
             self.list.takeItem(self.list.row(it))
         self.next_btn.setEnabled(self.list.count() > 0)
 
-    def stl_paths(self) -> list[str]:
-        return [self.list.item(i).data(QtCore.Qt.ItemDataRole.UserRole)
-                for i in range(self.list.count())]
+    # -- per-model transform editor ------------------------------------------
+    def _load_xform(self, item, _prev=None) -> None:
+        self.xform_box.setEnabled(item is not None)
+        if item is None:
+            return
+        xf = item.data(_XFORM_ROLE) or {}
+        self._loading = True
+        try:
+            self.tx.setValue(xf.get("tx", 0.0)); self.ty.setValue(xf.get("ty", 0.0))
+            self.tz.setValue(xf.get("tz", 0.0)); self.rx.setValue(xf.get("rx", 0.0))
+            self.ry.setValue(xf.get("ry", 0.0)); self.rz.setValue(xf.get("rz", 0.0))
+        finally:
+            self._loading = False
+
+    def _save_xform(self, *_a) -> None:
+        if self._loading:
+            return
+        item = self.list.currentItem()
+        if item is None:
+            return
+        item.setData(_XFORM_ROLE, dict(
+            tx=self.tx.value(), ty=self.ty.value(), tz=self.tz.value(),
+            rx=self.rx.value(), ry=self.ry.value(), rz=self.rz.value()))
+
+    # -- accessors ------------------------------------------------------------
+    def models(self) -> list[dict]:
+        """[{path, tx, ty, tz, rx, ry, rz}, ...] in list order."""
+        out = []
+        for i in range(self.list.count()):
+            it = self.list.item(i)
+            xf = dict(it.data(_XFORM_ROLE) or {})
+            xf["path"] = it.data(_PATH_ROLE)
+            out.append(xf)
+        return out
 
     def config_dict(self) -> dict:
         return {
@@ -266,9 +316,6 @@ class PrepPanel(QtWidgets.QWidget):
             "n_angles": self.n_angles.value(),
         }
 
-    def rot_angles(self) -> list[float]:
-        return [self.rot_x.value(), self.rot_y.value(), self.rot_z.value()]
-
 
 class VoxelizePanel(QtWidgets.QWidget):
     """Run GPU voxelization and report the resulting grid."""
@@ -278,8 +325,8 @@ class VoxelizePanel(QtWidgets.QWidget):
         lay = QtWidgets.QVBoxLayout(self)
         lay.addWidget(_section("2. Voxelize — GPU rasterization"))
         lay.addWidget(QtWidgets.QLabel(
-            "Voxelize the merged mesh on the GPU (OpenGL). The target appears "
-            "in the 3D view."))
+            "Voxelize the model(s) on the GPU (OpenGL). The target appears in the "
+            "3D view."))
 
         self.hardware = QtWidgets.QLabel("Hardware: (detecting…)")
         self.hardware.setWordWrap(True)
@@ -332,16 +379,9 @@ class OptimizePanel(QtWidgets.QWidget):
         self.n_iter.setValue(20)
         form.addRow("Iterations:", self.n_iter)
 
-        self.d_high = QtWidgets.QDoubleSpinBox()
-        self.d_high.setRange(0.0, 1.0)
-        self.d_high.setSingleStep(0.05)
-        self.d_high.setValue(0.85)
+        self.d_high = _spin(0.0, 1.0, 0.85, 0.05)
         form.addRow("Dose high (d_h):", self.d_high)
-
-        self.d_low = QtWidgets.QDoubleSpinBox()
-        self.d_low.setRange(0.0, 1.0)
-        self.d_low.setSingleStep(0.05)
-        self.d_low.setValue(0.65)
+        self.d_low = _spin(0.0, 1.0, 0.65, 0.05)
         form.addRow("Dose low (d_l):", self.d_low)
         lay.addLayout(form)
 
@@ -364,6 +404,7 @@ class OptimizePanel(QtWidgets.QWidget):
         self.slab.setToolTip("z-slab depth for very large parts: auto / off / an integer")
         mrow.addRow("z-slab:", self.slab)
         self.low_mem = QtWidgets.QCheckBox("Low-memory BCLP buffers")
+        self.low_mem.setEnabled(False)
         mrow.addRow("", self.low_mem)
         lay.addLayout(mrow)
 
@@ -403,6 +444,7 @@ class OptimizePanel(QtWidgets.QWidget):
         self.low_mem.setEnabled(is_bclp)
         if not is_bclp:
             self.diffusion.setChecked(False)
+            self.low_mem.setChecked(False)
 
     def config_dict(self) -> dict:
         return {
@@ -431,6 +473,7 @@ class OptimizePanel(QtWidgets.QWidget):
         self.status.setText(msg)
 
     def set_result(self, quality: dict, secs: float) -> None:
+        self.bar.setRange(0, 100)
         self.bar.setValue(100)
         if quality:
             self.result.setText(
@@ -461,10 +504,7 @@ class PreviewPanel(QtWidgets.QWidget):
 
         lay.addWidget(_section("Projection video"))
         form = QtWidgets.QFormLayout()
-        self.rot_vel = QtWidgets.QDoubleSpinBox()
-        self.rot_vel.setRange(1.0, 3600.0)
-        self.rot_vel.setValue(54.0)
-        self.rot_vel.setSuffix(" °/s")
+        self.rot_vel = _spin(1.0, 3600.0, 54.0, 1.0, " °/s")
         form.addRow("Rotation speed:", self.rot_vel)
         self.num_loops = QtWidgets.QSpinBox()
         self.num_loops.setRange(1, 100)
