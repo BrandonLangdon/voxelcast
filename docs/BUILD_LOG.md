@@ -136,6 +136,35 @@ the live GUI.
 **Status.** Done on `tomo-parity`. Full suite 26 passed.
 
 ---
+
+## 2026-06-21 — Known limitations & choices for future review
+
+Captured before pausing the project (pending a physical printer to validate the
+end-to-end print path). Logic-checked against the engine; none are regressions.
+
+**Legacy "Reconstruct from STL/3MF" menu forces CPU.** `engine/reconstruct.py`
+hardcodes `CUDA=False`, so on a CUDA machine that old menu runs on the CPU; only
+the **guided flow** (via `VAMPipeline.apply_hardware`) auto-detects and uses CUDA.
+*Future:* make the legacy menu auto-detect too, or retire it now that the guided
+flow supersedes it.
+
+**Inserts on a CUDA backend will fail.** VoxelCast surfaces 3MF inserts, but the
+engine's CUDA GPU branch can't optimize attenuation/occlusion (raises
+`NotImplementedError` — see VAMToolbox's log). Inserts work on CPU/Metal, not
+CUDA. *Future:* warn in the UI (or gate the run) when a 3MF insert is loaded with
+a CUDA backend.
+
+**CAL not in the guided flow.** Only OSMO/BCLP (matching `VAMPipeline`); CAL is
+reachable only via the legacy dialog (CPU). *Future:* depends on adding CAL to the
+pipeline upstream.
+
+**3MF translate ignored** (rotation is applied). Per-model translate is meant for
+arranging multiple STL parts; a single 3MF self-centers. *Future:* support 3MF
+translate if multi-3MF arrangement is ever needed.
+
+**Status.** Noted; deferred. Project paused pending a physical device.
+
+---
 ```
 Template for new entries:
 
