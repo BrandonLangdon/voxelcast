@@ -15,6 +15,7 @@ Threading model:
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 import numpy as np
@@ -22,6 +23,7 @@ from PySide6 import QtCore, QtWidgets
 
 from voxelcast import __version__
 from voxelcast.engine.worker import OptimizeWorker, engine_available
+from voxelcast.engine import pipeline_bridge as pb
 from voxelcast.io import load, save_neutral, NATIVE_EXTS, NEUTRAL_EXTS, LoadError
 from voxelcast.model import Dataset
 
@@ -49,12 +51,23 @@ class MainWindow(QtWidgets.QMainWindow):
         self._thread: QtCore.QThread | None = None
         self._worker: OptimizeWorker | None = None
 
+        # Guided-flow pipeline session (VAMPipeline) + its worker thread.
+        self._pipe = None
+        self._config = None
+        self._merged_tmp: str | None = None
+        self._export_path: str | None = None
+        self._pp_thread: QtCore.QThread | None = None
+        self._pp_worker: pb.PipelineWorker | None = None
+
         self._build_menu()
         self._build_toolbar()
         self._build_docks()
+        self._build_stage_flow()  # central guided workflow
         self._build_view_menu()  # after docks exist (uses their toggle actions)
         self._build_statusbar()
-        self.statusBar().showMessage("Open a file or reconstruct from an STL to begin")
+        self._show_hardware()
+        self.statusBar().showMessage(
+            "Prep → Voxelize → Optimize → Preview, or open a file directly")
 
     # ----- UI construction -------------------------------------------------
     def _build_menu(self) -> None:
@@ -122,10 +135,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.slice_dock.setWidget(
                 _placeholder(f"2D view unavailable:\n{e}\n\npip install pyqtgraph")
             )
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.slice_dock)
+        # 2D slices live in the RIGHT area, tabbed with the 3D view: both show the
+        # same dataset, so you swap between them rather than view side by side.
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.slice_dock)
+        self.tabifyDockWidget(self.volume_dock, self.slice_dock)
 
-        # Dedicated sinogram / projection view (angle scrubber). Shares the left
-        # area with the 2D slices dock; only one is shown at a time per dataset.
+        # Dedicated sinogram / projection view (angle scrubber), tabbed on the right.
         self.sinogram_dock = QtWidgets.QDockWidget("Sinogram / Projections", self)
         try:
             from voxelcast.viewers.sinogram_view import SinogramView
@@ -135,8 +150,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sinogram_dock.setWidget(
                 _placeholder(f"Sinogram view unavailable:\n{e}\n\npip install pyqtgraph")
             )
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.sinogram_dock)
-        self.tabifyDockWidget(self.slice_dock, self.sinogram_dock)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.sinogram_dock)
+        self.tabifyDockWidget(self.volume_dock, self.sinogram_dock)
         self.sinogram_dock.hide()
 
         # Side-by-side comparison (e.g. target vs recon). Hidden by default;
@@ -150,8 +165,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.compare_dock.setWidget(
                 _placeholder(f"Compare view unavailable:\n{e}\n\npip install pyqtgraph")
             )
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.compare_dock)
-        self.tabifyDockWidget(self.slice_dock, self.compare_dock)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.compare_dock)
+        self.tabifyDockWidget(self.volume_dock, self.compare_dock)
         self.compare_dock.hide()
 
         # Convergence / error plot (bottom, full width). Hidden by default --
@@ -167,6 +182,36 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self.error_dock)
         self.error_dock.hide()
+
+        # 3D is the default front tab of the right-hand viewer group.
+        self.volume_dock.raise_()
+
+    def _build_stage_flow(self) -> None:
+        """The guided Prep → Voxelize → Optimize → Preview flow (central widget)."""
+        from voxelcast.widgets.stage_flow import StageFlow
+        self.stage = StageFlow()
+        self.setCentralWidget(self.stage)
+        self.stage.voxelizeRequested.connect(self._flow_voxelize)
+        self.stage.optimizeRequested.connect(self._flow_optimize)
+        self.stage.rebinRequested.connect(self._flow_rebin)
+        self.stage.exportRequested.connect(self._flow_export)
+        self.stage.cancelRequested.connect(self._flow_cancel)
+
+    def _show_hardware(self) -> None:
+        if not engine_available():
+            self.stage.set_hardware("Engine: vamtoolbox not installed")
+            return
+        try:
+            import vamtoolbox as vam
+            info = vam.util.hardware.detect_system()
+            backend = ("CUDA (astra GPU)" if info.get("cuda")
+                       else "Apple Metal (GPU)" if info.get("metal")
+                       else "CPU (sparse)")
+            self.stage.set_hardware(
+                f"Backend: {backend}  ·  CPU {info['cpu_logical']} cores  ·  "
+                f"RAM {info['ram_avail_gb']} GB free")
+        except Exception as e:
+            self.stage.set_hardware(f"Hardware detection failed: {e}")
 
     def _build_view_menu(self) -> None:
         """A View menu with a show/hide toggle for every panel."""
@@ -233,8 +278,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.volume_dock.setVisible(ds.is_volume)
         self.slice_dock.setVisible(not is_sino)
         self.sinogram_dock.setVisible(is_sino)
+        # Raise the canonical tab for this dataset; tabs can still be swapped freely.
         if is_sino:
             self.sinogram_dock.raise_()
+        elif ds.is_volume:
+            self.volume_dock.raise_()
+        else:
+            self.slice_dock.raise_()
 
     # ----- file actions ----------------------------------------------------
     def open_file_dialog(self) -> None:
@@ -379,10 +429,210 @@ class MainWindow(QtWidgets.QMainWindow):
         self._thread = None
         self._worker = None
 
+    # ----- guided flow (VAMPipeline) --------------------------------------
+    def _flow_busy(self) -> bool:
+        if self._pp_thread is not None or (self._thread is not None):
+            QtWidgets.QMessageBox.information(self, "Busy", "A job is already running.")
+            return True
+        if not engine_available():
+            QtWidgets.QMessageBox.critical(
+                self, "Engine unavailable",
+                "vamtoolbox is not installed in this environment.")
+            return True
+        return False
+
+    def _flow_voxelize(self) -> None:
+        """Stage 2: build the target on the MAIN thread (OpenGL voxelizer).
+
+        STL models are merged (each with its translate+rotate) into one aligned
+        grid; a single 3MF is voxelized with its roles (insert / zero-dose).
+        """
+        if self._flow_busy():
+            return
+        models = self.stage.prep.models()
+        if not models:
+            QtWidgets.QMessageBox.warning(self, "No models", "Add at least one STL or 3MF model.")
+            return
+        import vamtoolbox as vam
+        stl = [m for m in models if m["path"].lower().endswith(".stl")]
+        tmf = [m for m in models if m["path"].lower().endswith(".3mf")]
+        if tmf and (stl or len(tmf) > 1):
+            QtWidgets.QMessageBox.warning(
+                self, "Unsupported combination",
+                "3MF carries its own bodies/roles, so it can't yet be merged with "
+                "other models. Import a single 3MF on its own, or use STL parts.")
+            return
+
+        self._cleanup_tmp()
+        fields = self.stage.config_dict()
+
+        try:
+            if tmf:
+                # Single 3MF: voxelize with roles; rotation from its transform.
+                m = tmf[0]
+                fields["stl_path"] = m["path"]
+                self._config, self._pipe = pb.make_pipeline(fields)
+                self._apply_hardware_quiet()
+                self.stage.voxelize.set_status(
+                    f"Voxelizing 3MF at resolution {self._config.res_opt}…")
+                QtWidgets.QApplication.processEvents()
+                tg = vam.geometry.TargetGeometry(
+                    threemffilename=m["path"], resolution=self._config.res_opt,
+                    rot_angles=[m["rx"], m["ry"], m["rz"]], bodies="auto")
+                self._pipe.target = tg
+            else:
+                # STL(s): merge with per-model transforms, then voxelize.
+                merged, is_temp = pb.merge_meshes(stl)
+                self._merged_tmp = merged if is_temp else None
+                fields["stl_path"] = merged
+                self._config, self._pipe = pb.make_pipeline(fields)
+                self._apply_hardware_quiet()
+                self.stage.voxelize.set_status(
+                    f"Voxelizing {len(stl)} part(s) at resolution {self._config.res_opt}…")
+                QtWidgets.QApplication.processEvents()
+                tg = vam.geometry.TargetGeometry(
+                    stlfilename=merged, resolution=self._config.res_opt)
+                tg.insert = None
+                self._pipe.target = tg
+        except Exception as e:
+            QtWidgets.QMessageBox.critical(self, "Voxelization failed", f"{e}")
+            self.stage.voxelize.set_status("Voxelization failed.")
+            return
+
+        arr = np.asarray(tg.array)
+        self.add_dataset(Dataset(array=arr, vol_type="target", name="target"))
+        # Surface any 3MF role volumes (insert / zero-dose) as datasets too.
+        for role in ("insert", "zero_dose"):
+            ra = getattr(tg, role, None)
+            if ra is not None and np.asarray(ra).any():
+                self.add_dataset(Dataset(array=np.asarray(ra), vol_type="target",
+                                         name=role), select=False)
+        self.stage.on_voxelized(arr.shape, int((arr > 0).sum()))
+        self.statusBar().showMessage(f"Voxelized: {arr.shape}")
+
+    def _apply_hardware_quiet(self) -> None:
+        try:
+            self._pipe.apply_hardware()      # fills use_cuda / rebin_jobs
+        except Exception:
+            pass
+
+    def _flow_optimize(self) -> None:
+        if self._pipe is None or self._pipe.target is None:
+            QtWidgets.QMessageBox.warning(self, "Voxelize first", "Run the Voxelize stage first.")
+            return
+        if self._flow_busy():
+            return
+        # Apply optimize-panel settings onto the live config.
+        for k, v in self.stage.optimize.config_dict().items():
+            setattr(self._config, k, v)
+        if self._error_view is not None:
+            self._error_view.reset()
+        self.stage.optimize.set_running(True)
+        self.statusBar().showMessage(f"Optimizing ({self._config.method})…")
+        self._run_stages(["optimize"])
+
+    def _flow_rebin(self) -> None:
+        if self._pipe is None or self._pipe.sinogram is None:
+            return
+        if self._flow_busy():
+            return
+        self.stage.preview.set_status("Rebinning to printer geometry…")
+        self._run_stages(["rebin"])
+
+    def _flow_export(self, opts: dict) -> None:
+        if self._pipe is None or self._pipe.sinogram is None:
+            return
+        if self._flow_busy():
+            return
+        self._export_path = opts["path"]
+        self.stage.preview.set_status("Rendering projection video…")
+        self._run_stages(["video"], video_path=opts["path"],
+                         video_kw={"rot_vel": opts["rot_vel"],
+                                   "num_loops": opts["num_loops"]})
+
+    def _flow_cancel(self) -> None:
+        if self._pp_worker is not None:
+            self._pp_worker.cancel()
+            self.statusBar().showMessage("Cancelling…")
+
+    def _run_stages(self, stages, video_path=None, video_kw=None) -> None:
+        self._pp_thread = QtCore.QThread(self)
+        self._pp_worker = pb.PipelineWorker(self._pipe, stages, video_path, video_kw)
+        self._pp_worker.moveToThread(self._pp_thread)
+        self._pp_thread.started.connect(self._pp_worker.run)
+        self._pp_worker.progress.connect(self._on_pp_progress)
+        self._pp_worker.stage_done.connect(self._on_pp_stage_done)
+        self._pp_worker.failed.connect(self._on_pp_failed)
+        self._pp_worker.finished.connect(self._pp_thread.quit)
+        self._pp_worker.failed.connect(self._pp_thread.quit)
+        self._pp_worker.finished.connect(self._pp_worker.deleteLater)
+        self._pp_worker.failed.connect(self._pp_worker.deleteLater)
+        self._pp_thread.finished.connect(self._pp_thread.deleteLater)
+        self._pp_thread.finished.connect(self._on_pp_thread_finished)
+        self.progress.setVisible(True)
+        self.progress.setRange(0, 0)
+        self._pp_thread.start()
+
+    @QtCore.Slot(str, float, str)
+    def _on_pp_progress(self, stage: str, frac: float, msg: str) -> None:
+        self.stage.progress(stage, frac, msg)
+        if frac > 0:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(int(frac * 100))
+        self.statusBar().showMessage(f"{stage}: {msg}")
+        if stage == "optimize" and self._error_view is not None:
+            m = re.search(r"iter (\d+)/(\d+).*dose error ([\d.eE+-]+)", msg)
+            if m:
+                self._error_view.add_point(int(m.group(1)), float(m.group(3)))
+
+    @QtCore.Slot(str)
+    def _on_pp_stage_done(self, stage: str) -> None:
+        if stage == "optimize":
+            self.add_dataset(pb.sino_dataset(self._pipe), select=False)
+            self.add_dataset(pb.recon_dataset(self._pipe), select=True)
+            if self._error_view is not None:
+                self._error_view.set_complete()
+            self.stage.on_optimized(self._pipe.compute_quality(),
+                                    self._pipe.timing.get("optimize", 0.0))
+        elif stage == "rebin":
+            ds = pb.rebinned_dataset(self._pipe)
+            self.add_dataset(ds, select=True)
+            self.stage.on_rebinned(ds.array.shape)
+        elif stage == "video":
+            self.stage.on_exported(self._export_path or "")
+            self.statusBar().showMessage(f"Exported {self._export_path}")
+
+    @QtCore.Slot(str)
+    def _on_pp_failed(self, msg: str) -> None:
+        self.stage.optimize.set_running(False)
+        if msg == "cancelled":
+            self.statusBar().showMessage("Job cancelled.")
+            return
+        self.statusBar().showMessage("Job failed.")
+        QtWidgets.QMessageBox.critical(self, "Pipeline error", msg)
+
+    @QtCore.Slot()
+    def _on_pp_thread_finished(self) -> None:
+        self.progress.setVisible(False)
+        self._pp_thread = None
+        self._pp_worker = None
+
+    def _cleanup_tmp(self) -> None:
+        if self._merged_tmp and os.path.exists(self._merged_tmp):
+            try:
+                os.remove(self._merged_tmp)
+            except OSError:
+                pass
+        self._merged_tmp = None
+
     def closeEvent(self, event) -> None:  # noqa: N802 (Qt signature)
-        if self._thread is not None and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait()
+        for th in (self._thread, self._pp_thread):
+            if th is not None and th.isRunning():
+                if self._pp_worker is not None:
+                    self._pp_worker.cancel()
+                th.quit()
+                th.wait()
+        self._cleanup_tmp()
         # Child dock widgets don't get closeEvent when the main window closes, so
         # clean up the 3D view's pop-outs and plotter here -- otherwise leftover
         # VTK windows segfault at teardown on macOS.
