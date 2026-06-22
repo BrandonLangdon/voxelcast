@@ -173,10 +173,6 @@ class PrepPanel(QtWidgets.QWidget):
         super().__init__(parent)
         lay = QtWidgets.QVBoxLayout(self)
         lay.addWidget(_section("1. Prep — models & geometry"))
-        lay.addWidget(QtWidgets.QLabel(
-            "Load one or more STL or 3MF models. STL parts are merged into one "
-            "aligned voxel grid; a single 3MF can carry lattices + roles "
-            "(insert / zero-dose)."))
 
         self.list = QtWidgets.QListWidget()
         self.list.setSelectionMode(

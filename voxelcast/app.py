@@ -135,10 +135,12 @@ class MainWindow(QtWidgets.QMainWindow):
             self.slice_dock.setWidget(
                 _placeholder(f"2D view unavailable:\n{e}\n\npip install pyqtgraph")
             )
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.slice_dock)
+        # 2D slices live in the RIGHT area, tabbed with the 3D view: both show the
+        # same dataset, so you swap between them rather than view side by side.
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.slice_dock)
+        self.tabifyDockWidget(self.volume_dock, self.slice_dock)
 
-        # Dedicated sinogram / projection view (angle scrubber). Shares the left
-        # area with the 2D slices dock; only one is shown at a time per dataset.
+        # Dedicated sinogram / projection view (angle scrubber), tabbed on the right.
         self.sinogram_dock = QtWidgets.QDockWidget("Sinogram / Projections", self)
         try:
             from voxelcast.viewers.sinogram_view import SinogramView
@@ -148,8 +150,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.sinogram_dock.setWidget(
                 _placeholder(f"Sinogram view unavailable:\n{e}\n\npip install pyqtgraph")
             )
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.sinogram_dock)
-        self.tabifyDockWidget(self.slice_dock, self.sinogram_dock)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.sinogram_dock)
+        self.tabifyDockWidget(self.volume_dock, self.sinogram_dock)
         self.sinogram_dock.hide()
 
         # Side-by-side comparison (e.g. target vs recon). Hidden by default;
@@ -163,8 +165,8 @@ class MainWindow(QtWidgets.QMainWindow):
             self.compare_dock.setWidget(
                 _placeholder(f"Compare view unavailable:\n{e}\n\npip install pyqtgraph")
             )
-        self.addDockWidget(QtCore.Qt.DockWidgetArea.LeftDockWidgetArea, self.compare_dock)
-        self.tabifyDockWidget(self.slice_dock, self.compare_dock)
+        self.addDockWidget(QtCore.Qt.DockWidgetArea.RightDockWidgetArea, self.compare_dock)
+        self.tabifyDockWidget(self.volume_dock, self.compare_dock)
         self.compare_dock.hide()
 
         # Convergence / error plot (bottom, full width). Hidden by default --
@@ -180,6 +182,9 @@ class MainWindow(QtWidgets.QMainWindow):
             )
         self.addDockWidget(QtCore.Qt.DockWidgetArea.BottomDockWidgetArea, self.error_dock)
         self.error_dock.hide()
+
+        # 3D is the default front tab of the right-hand viewer group.
+        self.volume_dock.raise_()
 
     def _build_stage_flow(self) -> None:
         """The guided Prep → Voxelize → Optimize → Preview flow (central widget)."""
@@ -273,8 +278,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.volume_dock.setVisible(ds.is_volume)
         self.slice_dock.setVisible(not is_sino)
         self.sinogram_dock.setVisible(is_sino)
+        # Raise the canonical tab for this dataset; tabs can still be swapped freely.
         if is_sino:
             self.sinogram_dock.raise_()
+        elif ds.is_volume:
+            self.volume_dock.raise_()
+        else:
+            self.slice_dock.raise_()
 
     # ----- file actions ----------------------------------------------------
     def open_file_dialog(self) -> None:

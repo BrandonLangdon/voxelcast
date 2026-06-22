@@ -110,6 +110,32 @@ Verified headless end-to-end (2 STLs → voxelize → optimize → rebin → MP4
 the live GUI.
 
 ---
+
+## 2026-06-21 — Guided-flow UI tweaks (first review round)
+
+**Context.** First round of UI feedback after using the guided flow.
+
+**Decisions.**
+- **Stage navigation → top step bar.** Moved the Prep/Voxelize/Optimize/Preview
+  rail from the left side to a horizontal `QTabBar` across the top; panels wrapped
+  in `QScrollArea` so the window resizes freely without clipping (no fixed-size
+  windows remain).
+- **3MF in Prep.** "Add model(s)…" accepts `.stl` and `.3mf`; a single 3MF
+  voxelizes with its roles (insert / zero-dose surfaced as datasets). Mixing 3MF
+  with other models is blocked (it carries its own bodies/roles).
+- **Per-model transform.** Each imported model has its own translate (X/Y/Z) and
+  rotate (X/Y/Z); the old single global rotation is gone. STL meshes are
+  transformed before merge (`merge_meshes`); 3MF uses its rotation.
+- **Combine 2D + 3D into a tabbed viewer.** The 3D volume and 2D slice (and
+  sinogram / compare) docks are tabified into one right-hand group — same dataset,
+  so you swap tabs rather than view side by side. 3D is the default tab; selecting
+  a dataset raises its canonical view.
+- **Dropped the Prep import description** — the file picker + (future) help docs
+  convey accepted formats.
+
+**Status.** Done on `tomo-parity`. Full suite 26 passed.
+
+---
 ```
 Template for new entries:
 
