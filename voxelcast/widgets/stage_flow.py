@@ -335,6 +335,10 @@ class VoxelizePanel(QtWidgets.QWidget):
         self.run_btn = QtWidgets.QPushButton("Voxelize  ⚙")
         lay.addWidget(self.run_btn)
 
+        self.bar = QtWidgets.QProgressBar()
+        self.bar.setVisible(False)
+        lay.addWidget(self.bar)
+
         self.status = QtWidgets.QLabel("")
         self.status.setWordWrap(True)
         lay.addWidget(self.status)
@@ -355,6 +359,23 @@ class VoxelizePanel(QtWidgets.QWidget):
 
     def set_status(self, msg: str) -> None:
         self.status.setText(msg)
+
+    def begin_progress(self, label: str = "Voxelizing…") -> None:
+        """Show an indeterminate bar before the first slice is reported."""
+        self.bar.setVisible(True)
+        self.bar.setRange(0, 0)
+        self.status.setText(label)
+
+    def set_progress(self, done: int, total: int, label: str = "") -> None:
+        self.bar.setVisible(True)
+        self.bar.setRange(0, max(1, int(total)))
+        self.bar.setValue(int(done))
+        pct = int(100 * done / total) if total else 0
+        tag = f"{label}: " if label and label != "voxelizing" else ""
+        self.status.setText(f"{tag}slicing {done}/{total}  ({pct}%)")
+
+    def end_progress(self) -> None:
+        self.bar.setVisible(False)
 
     def set_result(self, shape, filled) -> None:
         self.result.setText(f"Target grid: {tuple(shape)}  ·  {int(filled):,} filled voxels")

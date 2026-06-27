@@ -123,6 +123,21 @@ def test_prep_per_model_transform(qapp, tmp_path):
     assert models[0]["path"] == str(p)
 
 
+def test_voxelize_progress_bar(qapp):
+    from voxelcast.widgets.stage_flow import StageFlow
+    sf = StageFlow()
+    vp = sf.voxelize
+    assert vp.bar.isHidden()                # hidden until a run starts
+    vp.begin_progress("Voxelizing…")
+    assert not vp.bar.isHidden()
+    assert vp.bar.minimum() == vp.bar.maximum() == 0   # indeterminate
+    vp.set_progress(7, 40, "print")
+    assert vp.bar.maximum() == 40 and vp.bar.value() == 7
+    assert "7/40" in vp.status.text() and "print" in vp.status.text()
+    vp.end_progress()
+    assert vp.bar.isHidden()
+
+
 def test_diffusion_disabled_for_osmo(qapp):
     from voxelcast.widgets.stage_flow import StageFlow
     sf = StageFlow()

@@ -466,6 +466,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self._cleanup_tmp()
         fields = self.stage.config_dict()
 
+        # Voxelization runs on this (main) thread because the OpenGL slicer
+        # requires it, so the engine streams per-slice progress through this
+        # callback; processEvents keeps the bar repainting instead of freezing.
+        def _vox_progress(done, total, label=""):
+            self.stage.voxelize.set_progress(done, total, label)
+            QtWidgets.QApplication.processEvents()
+
         try:
             if tmf:
                 # Single 3MF: voxelize with roles; rotation from its transform.
@@ -473,12 +480,13 @@ class MainWindow(QtWidgets.QMainWindow):
                 fields["stl_path"] = m["path"]
                 self._config, self._pipe = pb.make_pipeline(fields)
                 self._apply_hardware_quiet()
-                self.stage.voxelize.set_status(
+                self.stage.voxelize.begin_progress(
                     f"Voxelizing 3MF at resolution {self._config.res_opt}…")
                 QtWidgets.QApplication.processEvents()
                 tg = vam.geometry.TargetGeometry(
                     threemffilename=m["path"], resolution=self._config.res_opt,
-                    rot_angles=[m["rx"], m["ry"], m["rz"]], bodies="auto")
+                    rot_angles=[m["rx"], m["ry"], m["rz"]], bodies="auto",
+                    progress=_vox_progress)
                 self._pipe.target = tg
             else:
                 # STL(s): merge with per-model transforms, then voxelize.
@@ -487,17 +495,20 @@ class MainWindow(QtWidgets.QMainWindow):
                 fields["stl_path"] = merged
                 self._config, self._pipe = pb.make_pipeline(fields)
                 self._apply_hardware_quiet()
-                self.stage.voxelize.set_status(
+                self.stage.voxelize.begin_progress(
                     f"Voxelizing {len(stl)} part(s) at resolution {self._config.res_opt}…")
                 QtWidgets.QApplication.processEvents()
                 tg = vam.geometry.TargetGeometry(
-                    stlfilename=merged, resolution=self._config.res_opt)
+                    stlfilename=merged, resolution=self._config.res_opt,
+                    progress=_vox_progress)
                 tg.insert = None
                 self._pipe.target = tg
         except Exception as e:
+            self.stage.voxelize.end_progress()
             QtWidgets.QMessageBox.critical(self, "Voxelization failed", f"{e}")
             self.stage.voxelize.set_status("Voxelization failed.")
             return
+        self.stage.voxelize.end_progress()
 
         arr = np.asarray(tg.array)
         self.add_dataset(Dataset(array=arr, vol_type="target", name="target"))

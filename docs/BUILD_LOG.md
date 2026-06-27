@@ -179,6 +179,35 @@ sync also wants a real-device check.
 
 ---
 
+## 2026-06-27 — Voxelize progress indicator
+
+**Context.** The Voxelize stage runs on the main thread (the OpenGL slicer
+requires it), so on larger parts the whole window blocked with no feedback — it
+read as a freeze/crash.
+
+**Decision.** Drive a real progress bar from the engine's new voxelizer callback
+(see VAMToolbox's log). `VoxelizePanel` gained a `QProgressBar` with
+`begin_progress()` (indeterminate until the first slice), `set_progress(done,
+total, label)`, and `end_progress()`. `_flow_voxelize` passes a `progress=`
+callback to `TargetGeometry` that updates the bar and calls
+`QApplication.processEvents()` each slice, so the bar actually repaints while the
+main-thread slicer runs. Covers both paths (STL per Z slice, 3MF per body) and
+shows the body group label (print / insert / zero-dose).
+
+**Why.** The slicer can't move off the main thread, so the only way to stay
+responsive is to pump the event loop between slices — which the per-slice
+callback gives us for free. A determinate bar (vs a spinner) tells the user how
+far along a long voxelization is.
+
+**Alternatives considered.** A modal "busy" spinner (rejected — hides how long is
+left). Running voxelize on a worker thread (rejected — OpenGL is main-thread-only
+on macOS). A fake timer-based bar (rejected — lies about progress).
+
+**Status.** Done on `tomo-parity`. New test `test_voxelize_progress_bar`; full
+suite 28 passed.
+
+---
+
 ## 2026-06-21 — Known limitations & choices for future review
 
 Captured before pausing the project (pending a physical printer to validate the
