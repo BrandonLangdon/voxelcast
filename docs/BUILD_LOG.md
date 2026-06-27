@@ -137,6 +137,48 @@ the live GUI.
 
 ---
 
+## 2026-06-27 — OpenCAL-ready video export
+
+**Context.** Read the OpenCAL firmware ([fork](https://github.com/BrandonLangdon/OpenCAL-Firmware))
+to find the real printer interface. It's a plain `.mp4` on a USB stick: the Pi
+reads the motor **RPM from the filename** (`<part>_<rpm>rpm.mp4`), plays the video
+**looped** via cvlc while spinning the vial — fully **open-loop** (nothing ties a
+frame to an angle), so one video loop must equal one revolution. The projector is
+**1920×1080** (HDMI, optional display rotation); the firmware spins **CCW**
+(hardcoded) and does its own center-crop/zoom + on-device vial-width calibration.
+
+**Decision.** Make the Preview export drop straight onto an OpenCAL USB:
+- **Filename convention** — `engine.pipeline_bridge.opencal_filename()` forces
+  `<part>_<rpm>rpm.mp4` (strips an existing tag and the reserved `recording`
+  token, forces `.mp4`). RPM is the UI's native unit now (`rpm*6 = deg/s`); 9 RPM
+  == VoxelTbox's old 54 °/s default, == the firmware's `default_rpm`.
+- **Resolution/orientation** — `export_video()` exposes projector W×H (default
+  **1920×1080**) and a **rotate** (default **90°**). A 90° rotate + swapped dims
+  stands an upright part along a landscape projector's long axis while preserving
+  the rebin's `size_scale` fit (diameter R → the 1080 axis either way).
+- **Handedness** — a **Mirror** toggle (`invert_u`) to match the CCW spin; flip if
+  a print comes out mirrored.
+- Keep **Loops = 1** (one revolution per file); the firmware loops it.
+
+**Why.** The firmware does final scaling via `default_print_size` + vial-width
+calibration, so absolute mm-per-pixel isn't required from VoxelCast — aspect,
+orientation, RPM-in-filename, and handedness are. These are exactly the knobs
+that can't be fixed on-device.
+
+**Verification.** Headless: 1920×1080 @ 13.5 fps, 90 frames, **loop = 6.67 s =
+60/9** (one rev at 9 RPM) — the open-loop sync condition holds; portrait
+1080×1920 also exports; filename tagged `_9rpm.mp4`. `rotate`/`mirror` go through
+`vamtoolbox.imagesequence.ImageConfig`.
+
+**Unverified until hardware.** Whether 90° (vs 270°) and mirror on/off give an
+upright, correctly-handed part — needs a real print to confirm; that's why both
+are exposed as toggles. cvlc honoring the encoded fps for drift-free open-loop
+sync also wants a real-device check.
+
+**Status.** Done on `tomo-parity`. Full suite 27 passed.
+
+---
+
 ## 2026-06-21 — Known limitations & choices for future review
 
 Captured before pausing the project (pending a physical printer to validate the

@@ -100,7 +100,11 @@ class StageFlow(QtWidgets.QWidget):
         if path:
             self.exportRequested.emit({
                 "path": path,
-                "rot_vel": self.preview.rot_vel.value(),
+                "rpm": self.preview.rpm.value(),
+                "width": self.preview.proj_w.value(),
+                "height": self.preview.proj_h.value(),
+                "rotate": self.preview.rotate_deg(),
+                "mirror": self.preview.mirror.isChecked(),
                 "num_loops": self.preview.num_loops.value(),
             })
 
@@ -498,13 +502,48 @@ class PreviewPanel(QtWidgets.QWidget):
         self.rebin_info.setWordWrap(True)
         lay.addWidget(self.rebin_info)
 
-        lay.addWidget(_section("Projection video"))
+        lay.addWidget(_section("Projection video (OpenCAL printer)"))
         form = QtWidgets.QFormLayout()
-        self.rot_vel = _spin(1.0, 3600.0, 54.0, 1.0, " °/s")
-        form.addRow("Rotation speed:", self.rot_vel)
+        # OpenCAL reads RPM from the filename; one video loop = one revolution.
+        self.rpm = QtWidgets.QSpinBox()
+        self.rpm.setRange(1, 60)
+        self.rpm.setValue(9)
+        self.rpm.setSuffix(" RPM")
+        self.rpm.setToolTip("Vial rotation speed. Written into the filename "
+                            "(<part>_<rpm>rpm.mp4) so the firmware sets the motor.")
+        form.addRow("Vial rotation:", self.rpm)
+
+        # Projector frame. Default 1920×1080 (the firmware's HDMI projector).
+        self.proj_w = QtWidgets.QSpinBox()
+        self.proj_w.setRange(320, 7680); self.proj_w.setSingleStep(4)
+        self.proj_w.setValue(1920)
+        self.proj_h = QtWidgets.QSpinBox()
+        self.proj_h.setRange(240, 7680); self.proj_h.setSingleStep(4)
+        self.proj_h.setValue(1080)
+        res_row = QtWidgets.QHBoxLayout()
+        res_row.addWidget(self.proj_w)
+        res_row.addWidget(QtWidgets.QLabel("×"))
+        res_row.addWidget(self.proj_h)
+        res_w = QtWidgets.QWidget(); res_w.setLayout(res_row)
+        form.addRow("Projector W×H:", res_w)
+
+        self.rotate = QtWidgets.QComboBox()
+        self.rotate.addItems(["0°", "90°", "180°", "270°"])
+        self.rotate.setCurrentText("90°")
+        self.rotate.setToolTip("Rotate frames CW. 90° stands an upright part along "
+                               "a landscape projector's long axis.")
+        form.addRow("Rotate frames:", self.rotate)
+
+        self.mirror = QtWidgets.QCheckBox("Mirror (flip handedness / rotation dir)")
+        self.mirror.setToolTip("The printer spins the vial CCW. Enable if a print "
+                               "comes out mirrored.")
+        form.addRow("", self.mirror)
+
         self.num_loops = QtWidgets.QSpinBox()
         self.num_loops.setRange(1, 100)
         self.num_loops.setValue(1)
+        self.num_loops.setToolTip("Revolutions per file. Keep 1 — the firmware "
+                                  "loops the video continuously.")
         form.addRow("Loops:", self.num_loops)
         lay.addLayout(form)
 
@@ -515,9 +554,13 @@ class PreviewPanel(QtWidgets.QWidget):
         lay.addWidget(self.exported)
         lay.addStretch(1)
 
+    def rotate_deg(self) -> float:
+        return float(self.rotate.currentText().rstrip("°"))
+
     def choose_path(self) -> str:
+        suggested = f"print_{self.rpm.value()}rpm.mp4"
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export projection video", "projections.mp4", "MP4 video (*.mp4)")
+            self, "Export projection video", suggested, "MP4 video (*.mp4)")
         return path
 
     def set_status(self, msg: str) -> None:

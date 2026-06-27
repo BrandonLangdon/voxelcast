@@ -544,10 +544,13 @@ class MainWindow(QtWidgets.QMainWindow):
             return
         if self._flow_busy():
             return
-        self._export_path = opts["path"]
+        # Force the OpenCAL filename convention (<part>_<rpm>rpm.mp4).
+        self._export_path = pb.opencal_filename(opts["path"], opts["rpm"])
         self.stage.preview.set_status("Rendering projection video…")
-        self._run_stages(["video"], video_path=opts["path"],
-                         video_kw={"rot_vel": opts["rot_vel"],
+        self._run_stages(["video"], video_path=self._export_path,
+                         video_kw={"rpm": opts["rpm"], "width": opts["width"],
+                                   "height": opts["height"], "rotate": opts["rotate"],
+                                   "mirror": opts["mirror"],
                                    "num_loops": opts["num_loops"]})
 
     def _flow_cancel(self) -> None:

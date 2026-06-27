@@ -15,6 +15,7 @@ Threading rules (same as the rest of the app):
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 
 import numpy as np
@@ -121,6 +122,63 @@ def rebinned_dataset(pipe, name="rebinned (printer)") -> Dataset:
 
 
 # --------------------------------------------------------------------------- #
+# Printer-ready video export (OpenCAL convention)
+# --------------------------------------------------------------------------- #
+def rpm_to_deg_s(rpm: float) -> float:
+    """RPM -> deg/s (OpenCAL names files in RPM; VAMToolbox renders in deg/s)."""
+    return float(rpm) * 6.0
+
+
+def opencal_filename(path: str, rpm: int) -> str:
+    """Force the OpenCAL naming convention: <stem>_<rpm>rpm.mp4.
+
+    The firmware reads the motor RPM straight from the filename, and hides any
+    file with 'recording' in the name. We strip an existing _<n>rpm tag and any
+    'recording' token, then append the correct tag.
+    """
+    d = os.path.dirname(path)
+    stem, ext = os.path.splitext(os.path.basename(path))
+    if ext.lower() != ".mp4":
+        ext = ".mp4"
+    stem = re.sub(r"_\d+rpm$", "", stem)               # drop an existing tag
+    stem = re.sub(r"recording", "", stem, flags=re.I)  # reserved by firmware
+    stem = stem.strip(" _-") or "print"
+    return os.path.join(d, f"{stem}_{int(round(rpm))}rpm{ext}")
+
+
+def export_video(pipe, path: str, rpm: float = 9, width: int = 1920,
+                 height: int = 1080, rotate: float = 90.0, mirror: bool = False,
+                 num_loops: int = 1) -> str:
+    """Render the printer projection video for OpenCAL.
+
+    rpm     -> motor speed; deg/s = rpm*6 (one video loop == one revolution).
+    width/height -> projector frame (matches the HDMI projector; rounded to /4
+                    as ImageConfig requires).
+    rotate  -> degrees CW; 90 stands an upright part along a landscape projector's
+               long axis while preserving the rebin's size_scale fit.
+    mirror  -> flip the diameter axis (invert_u) to match the vial's rotation
+               handedness (the firmware spins CCW; flip if a print comes out
+               mirrored).
+    """
+    import vamtoolbox as vam
+    sino = pipe.rebinned or pipe.sinogram
+    if sino is None:
+        raise RuntimeError("nothing to render; run optimize()/rebin() first")
+    w = int(round(width / 4) * 4)
+    h = int(round(height / 4) * 4)
+    rp = pipe._rebin_params_compute()
+    img_cfg = vam.imagesequence.ImageConfig(
+        (w, h), intensity_scale=1, size_scale=rp["size_scale"],
+        array_num=1, array_offset=0, invert_v=False, v_offset=0,
+        invert_u=bool(mirror), rotate_angle=float(rotate),
+        normalization_percentile=99.9)
+    seq = vam.imagesequence.ImageSeq(img_cfg, sinogram=sino)
+    seq.saveAsVideo(save_path=path, rot_vel=rpm_to_deg_s(rpm),
+                    num_loops=num_loops, preview=False)
+    return path
+
+
+# --------------------------------------------------------------------------- #
 # Worker
 # --------------------------------------------------------------------------- #
 class PipelineWorker(QtCore.QObject):
@@ -173,7 +231,7 @@ class PipelineWorker(QtCore.QObject):
                 elif stage == "rebin":
                     self._pipe.rebin()
                 elif stage == "video":
-                    self._pipe.save_video(self._video_path, **self._video_kw)
+                    export_video(self._pipe, self._video_path, **self._video_kw)
                 else:
                     raise ValueError(f"unknown stage: {stage}")
                 self.stage_done.emit(stage)

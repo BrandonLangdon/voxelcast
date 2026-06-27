@@ -26,6 +26,19 @@ def test_make_pipeline_ignores_unknown_fields():
     assert not hasattr(cfg, "not_a_field")
 
 
+def test_opencal_filename_convention():
+    from voxelcast.engine import pipeline_bridge as pb
+    # appends the rpm tag
+    assert pb.opencal_filename("/x/part.mp4", 9).endswith("part_9rpm.mp4")
+    # replaces an existing tag rather than stacking
+    assert pb.opencal_filename("/x/part_12rpm.mp4", 9).endswith("part_9rpm.mp4")
+    # forces .mp4 and strips the reserved 'recording' token
+    out = pb.opencal_filename("/x/my_recording_clip.avi", 24)
+    assert out.endswith(".mp4") and "recording" not in out and out.endswith("24rpm.mp4")
+    # rpm -> deg/s mapping (9 RPM == VoxelCast's 54 deg/s default)
+    assert pb.rpm_to_deg_s(9) == 54.0
+
+
 def test_merge_stls_single_passthrough(tmp_path):
     trimesh = pytest.importorskip("trimesh")
     from voxelcast.engine import pipeline_bridge as pb
